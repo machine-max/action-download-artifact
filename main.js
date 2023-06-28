@@ -46,16 +46,25 @@ async function main() {
         core.info(`==> Artifact name: ${name}`)
         core.info(`==> Local path: ${path}`)
 
-        if (!workflow) {
+        let workflowID
+        if (workflow) {
+            const run = await client.rest.actions.getWorkflow({
+                owner: owner,
+                repo: repo,
+                workflow_id: workflow
+            })
+            workflowID = run.data.id
+        } else {
             const run = await client.rest.actions.getWorkflowRun({
                 owner: owner,
                 repo: repo,
                 run_id: runID || github.context.runId,
             })
-            workflow = run.data.workflow_id
+            workflowID = run.data.workflow_id
         }
 
         core.info(`==> Workflow name: ${workflow}`)
+        core.info(`==> Workflow ID: ${workflowID}`)
         core.info(`==> Workflow conclusion: ${workflowConclusion}`)
 
         const uniqueInputSets = [
@@ -82,6 +91,7 @@ async function main() {
                 pull_number: pr,
             })
             commit = pull.data.head.sha
+            core.info(`==> Found matching PR for ${pr} with SHA ${commit}`)
             //branch = pull.data.head.ref
         }
 
@@ -107,20 +117,37 @@ async function main() {
             for await (const runs of client.paginate.iterator(client.rest.actions.listWorkflowRuns, {
                 owner: owner,
                 repo: repo,
-                workflow_id: workflow,
+                workflow_id: workflowID,
                 ...(branch ? { branch } : {}),
                 ...(event ? { event } : {}),
-                ...(commit ? { head_sha: commit } : {}),
+                // ...(commit ? { head_sha: commit } : {}),
             }
             )) {
+                core.debug(`listWorkflowRuns Status = ${runs.status}`)
+                core.debug(`Found ${runs.data.length} runs`)
                 for (const run of runs.data) {
+                    core.debug(`Run number = ${run.run_number}`)
+                    core.debug(`Run conclusion = ${run.conclusion}`)
+                    core.debug(`Run status = ${run.status}`)
+                    core.debug(`Run head_sha = ${run.head_sha}`)
+
+                    if (commit && commit != run.head_sha) {
+                        core.debug(`Workflow run has a different head_sha value: ${run.head_sha}`)
+                        continue
+                    }
+
                     if (runNumber && run.run_number != runNumber) {
+                        core.debug(`Workflow run has a different run_number value: ${run.run_number}`)
                         continue
                     }
+
                     if (workflowConclusion && (workflowConclusion != run.conclusion && workflowConclusion != run.status)) {
+                        core.debug(`Workflow run has a different conclusion or status: ${run.conclusion} | ${run.status}`)
                         continue
                     }
+
                     if (checkArtifacts || searchArtifacts) {
+                        core.debug(`Looking for artifacts for run ${run.id}`)
                         let artifacts = await client.paginate(client.rest.actions.listWorkflowRunArtifacts, {
                             owner: owner,
                             repo: repo,
@@ -215,7 +242,7 @@ async function main() {
         }
 
         core.setOutput("found_artifact", true)
-        
+
         for (const artifact of artifacts) {
             core.info(`==> Artifact: ${artifact.id}`)
 
@@ -270,7 +297,7 @@ async function main() {
 
     function setExitMessage(ifNoArtifactFound, message) {
         core.setOutput("found_artifact", false)
-        
+
         switch (ifNoArtifactFound) {
             case "fail":
                 core.setFailed(message)
